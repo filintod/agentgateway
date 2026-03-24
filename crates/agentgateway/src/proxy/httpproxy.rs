@@ -64,6 +64,11 @@ pub fn apply_logging_policy_to_log(log: &mut RequestLog, lp: &frontend::LoggingP
 	}
 }
 
+async fn refresh_buffered_response_body(log: &mut RequestLog, resp: &mut Response) {
+	resp.extensions_mut().remove::<crate::cel::BufferedBody>();
+	log.cel.ctx().maybe_buffer_response_body(resp).await;
+}
+
 async fn apply_request_policies(
 	policies: &store::RoutePolicies,
 	client: PolicyClient,
@@ -468,6 +473,10 @@ impl HTTPProxy {
 			},
 		};
 
+		if let Some(l) = log.as_mut() {
+			refresh_buffered_response_body(l, &mut resp).await;
+		}
+
 		// Pass the log into the body so it finishes once the stream is entirely complete.
 		// We will also record trailer info there.
 		log.with(|l| {
@@ -608,7 +617,7 @@ impl HTTPProxy {
 					strng::format!("{}/*", p)
 				}
 			},
-			PathMatch::Regex(r) => r.as_str().into(),
+			PathMatch::Regex(r, _) => r.as_str().into(),
 		});
 		req.extensions_mut().insert(path_match);
 
