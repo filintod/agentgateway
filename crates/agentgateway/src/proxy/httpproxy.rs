@@ -617,7 +617,7 @@ impl HTTPProxy {
 					strng::format!("{}/*", p)
 				}
 			},
-			PathMatch::Regex(r, _) => r.as_str().into(),
+			PathMatch::Regex(r) => r.as_str().into(),
 		});
 		req.extensions_mut().insert(path_match);
 
@@ -2172,5 +2172,61 @@ impl OptLogger for Option<&mut RequestLog> {
 		if let Some(log) = self.as_mut() {
 			f(log)
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use ::http::Method;
+	use http_body_util::BodyExt as _;
+	use rand::RngExt;
+	use serde_json::json;
+
+	use crate::test_helpers::proxymock::*;
+
+	#[tokio::test]
+	async fn access_log_uses_final_transformed_response_body() {
+		let mut bind = setup_proxy_test(
+			r#"
+config:
+  logging:
+    fields:
+      add:
+        body: string(response.body)
+"#,
+		)
+		.unwrap()
+		.with_bind(simple_bind(basic_route("127.0.0.1:1".parse().unwrap())));
+		bind
+			.attach_route_policy(json!({
+				"directResponse": {
+					"body": "before",
+					"status": 200,
+				},
+				"transformations": {
+					"response": {
+						"body": "'after'",
+					},
+				},
+			}))
+			.await;
+
+		let io = bind.serve_http(BIND_KEY);
+		let r = rand::rng().random::<u128>();
+		let path = format!("/access-log-final-body-{r}");
+		let res = send_request(io, Method::GET, &format!("http://lo{path}")).await;
+		assert_eq!(res.status(), 200);
+		assert_eq!(
+			res.into_body().collect().await.unwrap().to_bytes().as_ref(),
+			b"after"
+		);
+
+		let log = agent_core::telemetry::testing::eventually_find(&[
+			("scope", "request"),
+			("http.path", &path),
+		])
+		.await
+		.unwrap();
+		assert_eq!(log["body"].as_str(), Some("after"));
 	}
 }
