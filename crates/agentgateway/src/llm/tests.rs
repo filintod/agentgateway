@@ -922,3 +922,55 @@ fn test_get_messages() {
 		"get-messages-messages",
 	);
 }
+
+#[tokio::test]
+async fn streaming_request_non_2xx_returns_error_body() {
+	use crate::llm::bedrock;
+	use crate::proxy::httpproxy::PolicyClient;
+	use crate::test_helpers::proxymock::setup_proxy_test;
+
+	let provider = AIProvider::Bedrock(bedrock::Provider {
+		model: Some(strng::new("anthropic.claude-3-5-sonnet-20241022-v2:0")),
+		region: strng::new("us-west-2"),
+		guardrail_identifier: None,
+		guardrail_version: None,
+	});
+	let req = LLMRequest {
+		streaming: true,
+		..response::dummy_llm_req(InputFormat::Completions)
+	};
+
+	let error_body =
+		br#"{"message":"An error occurred (ValidationException) when calling the Converse operation"}"#;
+	let upstream_resp = ::http::Response::builder()
+		.status(400)
+		.header("content-type", "application/json")
+		.body(Body::from(Bytes::from_static(error_body)))
+		.unwrap();
+
+	let resp = provider
+		.process_response(
+			PolicyClient {
+				inputs: setup_proxy_test("{}").unwrap().pi,
+			},
+			req,
+			LLMResponsePolicies::default(),
+			AsyncLog::default(),
+			false,
+			upstream_resp,
+		)
+		.await
+		.expect("process_response should succeed for streaming error");
+
+	assert_eq!(resp.status(), 400);
+	let body_bytes = resp.collect().await.unwrap().to_bytes();
+	assert!(!body_bytes.is_empty(), "error body must not be empty");
+	let parsed: Value = serde_json::from_slice(&body_bytes).expect("response must be valid JSON");
+	assert_eq!(parsed["error"]["type"], "invalid_request_error");
+	assert!(
+		parsed["error"]["message"]
+			.as_str()
+			.unwrap()
+			.contains("ValidationException")
+	);
+}
