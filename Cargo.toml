@@ -259,5 +259,5 @@ codegen-units = 1
 lto = true
 
 [profile.bench]
-inherits = "quick-release"
-debug = true
+inherits = "release"
+debug = "line-tables-only"

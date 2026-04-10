@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::RwLock;
+
+use parking_lot::RwLock;
 
 use agent_core::strng;
 use divan::Bencher;
@@ -25,7 +26,7 @@ fn run_test(req: &Request, routes: &[(&str, Vec<&str>, Vec<RouteMatch>)]) -> Opt
 
 	let listener = setup_listener(routes);
 
-	let result = super::select_best_route(stores.clone(), dummy_dest, &listener, req);
+	let result = super::select_best_route(&stores, dummy_dest, &listener, req);
 	result.map(|(r, _)| r.key.to_string())
 }
 
@@ -901,7 +902,7 @@ async fn test_waypoint_hostname_match() {
 	let listener = hbone_listener();
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(result.is_some(), "should return default waypoint route");
 	let (route, _) = result.unwrap();
 	assert_eq!(route.key.as_str(), "_waypoint-default");
@@ -933,7 +934,7 @@ async fn test_waypoint_hostname_mismatch() {
 	);
 	let listener = hbone_listener();
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(
 		result.is_none(),
 		"should reject service bound to a different waypoint"
@@ -967,7 +968,7 @@ async fn test_waypoint_hostname_fqdn_match() {
 	let listener = hbone_listener();
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(result.is_some(), "should match waypoint with FQDN hostname");
 }
 
@@ -1008,7 +1009,7 @@ async fn test_waypoint_address_match() {
 	let listener = hbone_listener();
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(result.is_some(), "should match waypoint by address VIP");
 	let (route, _) = result.unwrap();
 	assert_eq!(route.key.as_str(), "_waypoint-default");
@@ -1049,7 +1050,7 @@ async fn test_waypoint_address_mismatch() {
 	);
 	let listener = hbone_listener();
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(
 		result.is_none(),
 		"should reject service bound to a different waypoint address"
@@ -1076,7 +1077,7 @@ async fn test_waypoint_no_waypoint_on_service() {
 	);
 	let listener = hbone_listener();
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(
 		result.is_none(),
 		"should return None for service without waypoint"
@@ -1109,7 +1110,7 @@ async fn test_waypoint_no_self_addr() {
 	);
 	let listener = hbone_listener();
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(
 		result.is_none(),
 		"should return None when self_addr is not configured"
@@ -1124,7 +1125,7 @@ async fn test_waypoint_unknown_vip() {
 	let req = request("http://unknown.svc.cluster.local/", http::Method::GET, &[]);
 	let listener = hbone_listener();
 
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(result.is_none(), "should return None for unknown VIP");
 }
 
@@ -1217,7 +1218,7 @@ async fn test_service_route_path_match() {
 		&[],
 	);
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
-	let result = super::select_best_route(stores.clone(), dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert_eq!(result.unwrap().0.key.as_str(), "api-route");
 
 	// /healthz matches the exact route (higher priority than prefix)
@@ -1227,7 +1228,7 @@ async fn test_service_route_path_match() {
 		&[],
 	);
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
-	let result = super::select_best_route(stores.clone(), dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert_eq!(result.unwrap().0.key.as_str(), "health-route");
 }
 
@@ -1271,7 +1272,7 @@ async fn test_service_route_method_match() {
 		&[],
 	);
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
-	let result = super::select_best_route(stores.clone(), dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert_eq!(result.unwrap().0.key.as_str(), "post-route");
 }
 
@@ -1303,7 +1304,7 @@ async fn test_service_route_header_match() {
 		&[("x-custom", "special")],
 	);
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
-	let result = super::select_best_route(stores.clone(), dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert_eq!(result.unwrap().0.key.as_str(), "header-route");
 
 	// Without matching header -> GAMMA reject (service routes exist, none match)
@@ -1313,7 +1314,7 @@ async fn test_service_route_header_match() {
 		&[],
 	);
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
-	let result = super::select_best_route(stores.clone(), dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(
 		result.is_none(),
 		"should reject when service routes exist but none match"
@@ -1345,7 +1346,7 @@ async fn test_service_route_rejects_unmatched() {
 		&[],
 	);
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
-	let result = super::select_best_route(stores.clone(), dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(
 		result.is_none(),
 		"GAMMA: should reject when service routes exist but none match"
@@ -1365,7 +1366,7 @@ async fn test_no_service_routes_falls_through_to_default() {
 		&[],
 	);
 	attach_waypoint_service(&mut req, &stores, &svc_nh());
-	let result = super::select_best_route(stores, dst, &listener, &req);
+	let result = super::select_best_route(&stores, dst, &listener, &req);
 	assert!(
 		result.is_some(),
 		"should fall through to default route when no service routes"
@@ -1373,23 +1374,32 @@ async fn test_no_service_routes_falls_through_to_default() {
 	assert_eq!(result.unwrap().0.key.as_str(), "_waypoint-default");
 }
 
-#[divan::bench(args = [(1,1), (100, 100), (5000,100)])]
-fn bench(b: Bencher, (host, route): (u64, u64)) {
-	let mut routes = vec![];
-	for host in 0..host {
-		for path in 0..route {
-			let m = vec![RouteMatch {
+/// Measures route selection when path never eliminates routes (all share prefix "/") and query
+/// is the sole differentiator — worst case for ParsedQuery reuse. Pairs with `bench` to isolate
+/// query-parsing cost: bench_with_query(N) - bench(N) ≈ cost of parsing the query string N times.
+#[divan::bench(args = [1, 100, 1000])]
+fn bench_with_query(b: Bencher, n_routes: u64) {
+	let mut route_list = vec![];
+	for i in 0..n_routes {
+		// Each route has a unique query value; only the last one matches the request.
+		route_list.push(Route {
+			key: strng::format!("route-{i:04}"),
+			service_key: None,
+			name: Default::default(),
+			hostnames: vec![], // empty = match any host
+			matches: vec![RouteMatch {
 				headers: vec![],
-				path: PathMatch::PathPrefix(strng::literal!("/{path}")),
+				// "/" matches every path → path never short-circuits; query is evaluated for all.
+				path: PathMatch::PathPrefix(strng::literal!("/")),
 				method: None,
-				query: vec![],
-			}];
-			routes.push((
-				format!("{host}-{path}"),
-				vec![format!("{}", host)],
-				m.clone(),
-			));
-		}
+				query: vec![QueryMatch {
+					name: "route".into(),
+					value: QueryValueMatch::Exact(strng::format!("r{i:05}")),
+				}],
+			}],
+			backends: vec![],
+			inline_policies: vec![],
+		});
 	}
 
 	let listener = Arc::new(Listener {
@@ -1398,31 +1408,183 @@ fn bench(b: Bencher, (host, route): (u64, u64)) {
 		hostname: Default::default(),
 		protocol: ListenerProtocol::HTTP,
 		tcp_routes: Default::default(),
-		routes: RouteSet::from_list(
-			routes
-				.into_iter()
-				.map(|(name, host, matches)| Route {
-					key: name.into(),
-					service_key: None,
-					name: Default::default(),
-					hostnames: host.into_iter().map(|s| s.into()).collect(),
-					matches,
-					backends: vec![],
-					inline_policies: vec![],
-				})
-				.collect(),
-		),
+		routes: RouteSet::from_list(route_list),
 	});
 	let stores = Stores::with_ipv6_enabled(true);
 	let dummy_dest = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1000);
-	let req = request("http://example.com", http::Method::GET, &[]);
+	// Target the LAST route — full scan, every query constraint evaluated before the match.
+	let last = n_routes - 1;
+	let req = request(
+		&format!("http://example.com/?route=r{last:05}"),
+		http::Method::GET,
+		&[],
+	);
 
 	b.bench_local(|| {
 		divan::black_box(super::select_best_route(
-			stores.clone(),
+			&stores,
 			dummy_dest,
 			&listener,
 			divan::black_box(&req),
 		))
+	});
+}
+
+/// Measures pure path-scan cost with no query constraints.
+/// N routes under a single hostname bucket; request targets the last route (worst-case scan).
+/// Pairs with `bench_with_query` to isolate the query-parsing overhead.
+#[divan::bench(args = [1, 100, 1000])]
+fn bench(b: Bencher, n_routes: u64) {
+	let mut route_list = vec![];
+	for i in 0..n_routes {
+		route_list.push(Route {
+			key: strng::format!("route-{i:04}"),
+			service_key: None,
+			name: Default::default(),
+			hostnames: vec![], // empty = match any host → all routes in the None bucket
+			matches: vec![RouteMatch {
+				headers: vec![],
+				// Unique prefix per route — path check must run for each candidate.
+				path: PathMatch::PathPrefix(strng::format!("/svc-{i:04}")),
+				method: None,
+				query: vec![],
+			}],
+			backends: vec![],
+			inline_policies: vec![],
+		});
+	}
+
+	let listener = Arc::new(Listener {
+		key: Default::default(),
+		name: Default::default(),
+		hostname: Default::default(),
+		protocol: ListenerProtocol::HTTP,
+		tcp_routes: Default::default(),
+		routes: RouteSet::from_list(route_list),
+	});
+	let stores = Stores::with_ipv6_enabled(true);
+	let dummy_dest = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1000);
+	// Target the LAST route — forces a full scan through all n_routes entries.
+	let last = n_routes - 1;
+	let req = request(
+		&format!("http://example.com/svc-{last:04}"),
+		http::Method::GET,
+		&[],
+	);
+
+	b.bench_local(|| {
+		divan::black_box(super::select_best_route(
+			&stores,
+			dummy_dest,
+			&listener,
+			divan::black_box(&req),
+		))
+	});
+}
+
+/// Measures the overhead of cloning a `Stores` value (2 Arc clones, one per StoreUpdater).
+/// This was the cost paid on every request before the `&Stores` change to `select_best_route`.
+#[divan::bench]
+fn bench_stores_clone(b: Bencher) {
+	let stores = Stores::with_ipv6_enabled(true);
+	b.bench_local(|| {
+		divan::black_box(stores.clone());
+	});
+}
+
+/// Measures a single `parking_lot::RwLock` uncontended read acquisition + release.
+/// Replaces the equivalent `std::sync::RwLock` cost on the hot path (~8 reads per request).
+#[divan::bench]
+fn bench_rwlock_read(b: Bencher) {
+	let stores = Stores::with_ipv6_enabled(true);
+	b.bench_local(|| {
+		let _guard = divan::black_box(stores.read_binds());
+	});
+}
+
+/// Measures reading a bind key through the store — the minimal per-call cost of
+/// `inputs.stores.read_binds().bind(key)`, repeated 5-8x per request in the hot path.
+#[divan::bench]
+fn bench_rwlock_read_lookup(b: Bencher) {
+	let stores = Stores::with_ipv6_enabled(true);
+	let key = crate::types::agent::BindKey::from(strng::literal!("bench-bind"));
+	b.bench_local(|| {
+		let guard = stores.read_binds();
+		divan::black_box(guard.bind(&key))
+	});
+}
+
+/// Measures route selection when all routes share path "/" and a header constraint is the
+/// sole differentiator — worst case for per-candidate header lookup.
+/// Completes the path/query/header benchmark triad alongside `bench` and `bench_with_query`.
+#[divan::bench(args = [1, 100, 1000])]
+fn bench_with_headers(b: Bencher, n_routes: u64) {
+	let mut route_list = vec![];
+	for i in 0..n_routes {
+		route_list.push(Route {
+			key: strng::format!("route-{i:04}"),
+			service_key: None,
+			name: Default::default(),
+			hostnames: vec![],
+			matches: vec![RouteMatch {
+				// "/" matches every path — header is the sole differentiator.
+				path: PathMatch::PathPrefix(strng::literal!("/")),
+				method: None,
+				query: vec![],
+				headers: vec![HeaderMatch {
+					name: crate::http::HeaderOrPseudo::Header(
+						http::HeaderName::from_static("x-route-id"),
+					),
+					value: HeaderValueMatch::Exact(
+						http::HeaderValue::from_str(&format!("r{i:05}")).unwrap(),
+					),
+				}],
+			}],
+			backends: vec![],
+			inline_policies: vec![],
+		});
+	}
+	let listener = Arc::new(Listener {
+		key: Default::default(),
+		name: Default::default(),
+		hostname: Default::default(),
+		protocol: ListenerProtocol::HTTP,
+		tcp_routes: Default::default(),
+		routes: RouteSet::from_list(route_list),
+	});
+	let stores = Stores::with_ipv6_enabled(true);
+	let dummy_dest = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1000);
+	// Request carries the LAST route's header value — forces a full scan.
+	let last = n_routes - 1;
+	let req = request(
+		"http://example.com/",
+		http::Method::GET,
+		&[("x-route-id", &format!("r{last:05}"))],
+	);
+	b.bench_local(|| {
+		divan::black_box(super::select_best_route(
+			&stores,
+			dummy_dest,
+			&listener,
+			divan::black_box(&req),
+		))
+	});
+}
+
+/// Header allocation: `format!("{n}")` vs `HeaderValue::from(n as u16)`.
+/// Measures the string allocation saved by the Phase 1 httpproxy.rs optimization.
+#[divan::bench]
+fn bench_header_value_from_u16(b: Bencher) {
+	let n: usize = 200;
+	b.bench_local(|| {
+		divan::black_box(http::HeaderValue::from(n as u16))
+	});
+}
+
+#[divan::bench]
+fn bench_header_value_format(b: Bencher) {
+	let n: usize = 200;
+	b.bench_local(|| {
+		divan::black_box(http::HeaderValue::from_str(&format!("{n}")).unwrap())
 	});
 }

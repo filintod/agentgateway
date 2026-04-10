@@ -7,9 +7,9 @@ pub use binds::{
 	LLMResponsePolicies, RoutePath, RoutePolicies, Store as BindStore,
 	StoreUpdater as BindStoreUpdater,
 };
+use parking_lot::RwLock;
 use serde::{Serialize, Serializer};
 mod discovery;
-use std::sync::RwLock;
 
 pub use binds::PreviousState as BindPreviousState;
 pub use discovery::{
@@ -45,11 +45,11 @@ impl Stores {
 			)))),
 		}
 	}
-	pub fn read_binds(&self) -> std::sync::RwLockReadGuard<'_, store::BindStore> {
+	pub fn read_binds(&self) -> parking_lot::RwLockReadGuard<'_, store::BindStore> {
 		self.binds.read()
 	}
 
-	pub fn read_discovery(&self) -> std::sync::RwLockReadGuard<'_, store::DiscoveryStore> {
+	pub fn read_discovery(&self) -> parking_lot::RwLockReadGuard<'_, store::DiscoveryStore> {
 		self.discovery.read()
 	}
 }

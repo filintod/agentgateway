@@ -15,7 +15,7 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(feature = "jemalloc")]
 #[allow(non_upper_case_globals)]
 #[unsafe(export_name = "malloc_conf")]
-pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:false,lg_prof_sample:19,background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000\0";
 
 #[derive(ClapArgs, Debug, Clone)]
 pub(crate) struct ConfigArgs {

@@ -1497,12 +1497,12 @@ impl RouteSet {
 	pub fn get_hostname(
 		&self,
 		hnm: &HostnameMatchRef,
-	) -> impl Iterator<Item = (Arc<Route>, &RouteMatch)> {
+	) -> impl Iterator<Item = (&Arc<Route>, &RouteMatch)> {
 		self.inner.get(hnm).into_iter().flatten().flat_map(|rl| {
 			self
 				.all
 				.get(&rl.key)
-				.map(|r| (r.clone(), r.matches.get(rl.index).expect("corrupted state")))
+				.map(|r| (r, r.matches.get(rl.index).expect("corrupted state")))
 		})
 	}
 
@@ -1625,8 +1625,8 @@ impl RouteSet {
 pub struct TCPRouteSet {
 	// Hostname -> []routes, sorted so that route matching can do a linear traversal
 	inner: hashbrown::HashMap<HostnameMatch, Vec<RouteKey>>,
-	// All routes
-	all: HashMap<RouteKey, TCPRoute>,
+	// All routes — Arc so get_hostname can hand out a cheap clone without copying the route
+	all: HashMap<RouteKey, Arc<TCPRoute>>,
 }
 
 impl serde::Serialize for TCPRouteSet {
@@ -1647,18 +1647,20 @@ impl TCPRouteSet {
 		rs
 	}
 
-	pub fn get_hostname(&self, hnm: &HostnameMatchRef) -> Option<&TCPRoute> {
+	pub fn get_hostname(&self, hnm: &HostnameMatchRef) -> Option<Arc<TCPRoute>> {
 		self
 			.inner
 			.get(hnm)
 			.and_then(|r| r.first())
 			.and_then(|rl| self.all.get(rl))
+			.cloned()
 	}
 
 	pub fn insert(&mut self, r: TCPRoute) {
 		if self.all.contains_key(&r.key) {
 			self.remove(&r.key);
 		}
+		let r = Arc::new(r);
 		// Insert the route into all HashMap first so it's available during binary search
 		self.all.insert(r.key.clone(), r.clone());
 

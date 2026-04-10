@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use crate::cel::ContextBuilder;
 use crate::http::auth::BackendAuth;
 use crate::http::authorization::{HTTPAuthorizationSet, NetworkAuthorizationSet};
@@ -315,14 +317,13 @@ impl RoutePolicies {
 impl From<RoutePolicies> for LLMRequestPolicies {
 	fn from(value: RoutePolicies) -> Self {
 		LLMRequestPolicies {
-			remote_rate_limit: value.remote_rate_limit.clone(),
+			remote_rate_limit: value.remote_rate_limit,
 			local_rate_limit: value
 				.local_rate_limit
-				.iter()
+				.into_iter()
 				.filter(|r| r.spec.limit_type == http::localratelimit::RateLimitType::Tokens)
-				.cloned()
 				.collect(),
-			llm: value.llm.clone(),
+			llm: value.llm,
 		}
 	}
 }
@@ -1342,14 +1343,14 @@ impl StoreUpdater {
 	pub fn new(state: Arc<RwLock<Store>>) -> StoreUpdater {
 		Self { state }
 	}
-	pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Store> {
-		self.state.read().expect("mutex acquired")
+	pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, Store> {
+		self.state.read()
 	}
-	pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, Store> {
-		self.state.write().expect("mutex acquired")
+	pub fn write(&self) -> parking_lot::RwLockWriteGuard<'_, Store> {
+		self.state.write()
 	}
 	pub fn dump(&self) -> Dump {
-		let store = self.state.read().expect("mutex");
+		let store = self.state.read();
 
 		// Services all have hostname, so use that as the key
 		let binds: Vec<_> = store
@@ -1387,7 +1388,7 @@ impl StoreUpdater {
 		backends: Vec<BackendWithPolicies>,
 		prev: PreviousState,
 	) -> PreviousState {
-		let mut s = self.state.write().expect("mutex acquired");
+		let mut s = self.state.write();
 		let mut old_binds = prev.binds;
 		let mut old_pols = prev.policies;
 		let mut old_backends = prev.backends;
@@ -1437,7 +1438,7 @@ impl agent_xds::Handler<ADPResource> for StoreUpdater {
 		&self,
 		updates: Box<&mut dyn Iterator<Item = XdsUpdate<ADPResource>>>,
 	) -> Result<(), Vec<RejectedConfig>> {
-		let mut state = self.state.write().unwrap();
+		let mut state = self.state.write();
 		let handle = |res: XdsUpdate<ADPResource>| {
 			match res {
 				XdsUpdate::Update(w) => state.insert_xds(w.name, w.resource)?,

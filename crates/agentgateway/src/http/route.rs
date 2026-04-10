@@ -17,19 +17,79 @@ use crate::*;
 #[path = "route_test.rs"]
 mod tests;
 
+/// Lazily-parsed query string. Parses at most once per request, only when a
+/// route actually has query matchers.
+enum ParsedQuery<'a> {
+	/// No query string in the URI — matches nothing.
+	None,
+	/// Has a raw query string but hasn't been parsed yet.
+	Unparsed(&'a str),
+	/// Already parsed into a map.
+	Parsed(HashMap<Cow<'a, str>, Cow<'a, str>>),
+}
+
+impl<'a> ParsedQuery<'a> {
+	fn from_request(request: &'a Request) -> Self {
+		match request.uri().query() {
+			Some(q) => ParsedQuery::Unparsed(q),
+			None => ParsedQuery::None,
+		}
+	}
+
+	fn get(&mut self, key: &str) -> Option<&Cow<'a, str>> {
+		match self {
+			ParsedQuery::None => None,
+			ParsedQuery::Unparsed(raw) => {
+				let map: HashMap<Cow<'a, str>, Cow<'a, str>> =
+					url::form_urlencoded::parse(raw.as_bytes()).collect();
+				*self = ParsedQuery::Parsed(map);
+				match self {
+					ParsedQuery::Parsed(m) => m.get(key),
+					_ => unreachable!(),
+				}
+			},
+			ParsedQuery::Parsed(map) => map.get(key),
+		}
+	}
+}
+
+/// Per-request state precomputed once before the route-scan loop.
+/// Passed to `matches_request` so each candidate doesn't re-derive the same values.
+struct RequestMatchCtx<'a> {
+	/// `request.uri().path()`
+	path: &'a str,
+	/// `path.trim_end_matches('/')` — used by every PathPrefix check
+	path_trimmed: &'a str,
+	/// `request.method().as_str()` — used when a route has a method constraint
+	method: &'a str,
+	/// Lazily-parsed query string, shared across all candidates
+	parsed_query: ParsedQuery<'a>,
+}
+
+impl<'a> RequestMatchCtx<'a> {
+	fn from_request(request: &'a Request) -> Self {
+		let path = request.uri().path();
+		Self {
+			path,
+			path_trimmed: path.trim_end_matches('/'),
+			method: request.method().as_str(),
+			parsed_query: ParsedQuery::from_request(request),
+		}
+	}
+}
+
 /// Check if a RouteMatch matches the given request (path, method, headers, query).
-fn matches_request(m: &RouteMatch, request: &Request) -> bool {
+/// `ctx` holds per-request values precomputed once before the route-scan loop.
+fn matches_request(m: &RouteMatch, ctx: &mut RequestMatchCtx<'_>, request: &Request) -> bool {
 	let path_matches = match &m.path {
-		PathMatch::Exact(p) => request.uri().path() == p.as_str(),
-		PathMatch::Regex(r) => {
-			let path = request.uri().path();
-			r.find(path)
-				.map(|m| m.start() == 0 && m.end() == path.len())
-				.unwrap_or(false)
-		},
+		PathMatch::Exact(p) => ctx.path == p.as_str(),
+		PathMatch::Regex(r) => r
+			.find(ctx.path)
+			.map(|m| m.start() == 0 && m.end() == ctx.path.len())
+			.unwrap_or(false),
 		PathMatch::PathPrefix(p) => {
 			let p = p.trim_end_matches('/');
-			let Some(suffix) = request.uri().path().trim_end_matches('/').strip_prefix(p) else {
+			let Some(suffix) = ctx.path_trimmed.strip_prefix(p) else {
 				return false;
 			};
 			// TODO this is not right!!
@@ -41,7 +101,7 @@ fn matches_request(m: &RouteMatch, request: &Request) -> bool {
 	}
 
 	if let Some(method) = &m.method
-		&& request.method().as_str() != method.method.as_str()
+		&& ctx.method != method.method.as_str()
 	{
 		return false;
 	}
@@ -68,14 +128,8 @@ fn matches_request(m: &RouteMatch, request: &Request) -> bool {
 			},
 		}
 	}
-	// TODO: this re-parses the query string on every call; hoist to caller if this becomes a hot path.
-	let query = request
-		.uri()
-		.query()
-		.map(|q| url::form_urlencoded::parse(q.as_bytes()).collect::<HashMap<_, _>>())
-		.unwrap_or_default();
 	for agent::QueryMatch { name, value } in &m.query {
-		let Some(have) = query.get(name.as_str()) else {
+		let Some(have) = ctx.parsed_query.get(name.as_str()) else {
 			return false;
 		};
 		match value {
@@ -98,7 +152,7 @@ fn matches_request(m: &RouteMatch, request: &Request) -> bool {
 }
 
 pub fn select_best_route(
-	stores: Stores,
+	stores: &Stores,
 	dst: SocketAddr,
 	listener: &Listener,
 	request: &Request,
@@ -121,6 +175,8 @@ pub fn select_best_route(
 	// criteria.
 
 	let host = http::get_host(request).ok()?;
+	// Precompute per-request values once; shared across all route-match candidates.
+	let mut ctx = RequestMatchCtx::from_request(request);
 
 	let (default_response, host) =
 		if let Some(wps) = request.extensions().get::<crate::proxy::WaypointService>() {
@@ -137,8 +193,8 @@ pub fn select_best_route(
 						for hnm in agent::HostnameMatch::all_matches(&svc.hostname) {
 							result = svc_routes
 								.get_hostname(&hnm)
-								.find(|(_, m)| matches_request(m, request))
-								.map(|(route, matcher)| (route, matcher.path.clone()));
+								.find(|(_, m)| matches_request(m, &mut ctx, request))
+								.map(|(route, matcher)| (route.clone(), matcher.path.clone()));
 							if result.is_some() {
 								break;
 							}
@@ -188,9 +244,9 @@ pub fn select_best_route(
 		};
 	for hnm in agent::HostnameMatch::all_matches(&host) {
 		let mut candidates = listener.routes.get_hostname(&hnm);
-		let best_match = candidates.find(|(_, m)| matches_request(m, request));
+		let best_match = candidates.find(|(_, m)| matches_request(m, &mut ctx, request));
 		if let Some((route, matcher)) = best_match {
-			return Some((route, matcher.path.clone()));
+			return Some((route.clone(), matcher.path.clone()));
 		}
 	}
 	default_response

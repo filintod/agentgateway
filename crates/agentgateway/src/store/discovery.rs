@@ -5,6 +5,8 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use agent_xds::XdsUpdate;
 use itertools::Itertools;
 use tokio::sync::watch::Sender;
@@ -523,11 +525,11 @@ impl StoreUpdater {
 	pub fn new(state: Arc<RwLock<Store>>) -> Self {
 		Self { state }
 	}
-	pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Store> {
-		self.state.read().expect("mutex acquired")
+	pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, Store> {
+		self.state.read()
 	}
 	pub fn dump(&self) -> Dump {
-		let store = self.state.read().expect("mutex");
+		let store = self.state.read();
 		// Services all have hostname, so use that as the key
 		let services: Vec<_> = store
 			.services
@@ -556,7 +558,7 @@ impl StoreUpdater {
 		workloads: Vec<LocalWorkload>,
 		prev: PreviousState,
 	) -> anyhow::Result<PreviousState> {
-		let mut s = self.state.write().expect("mutex acquired");
+		let mut s = self.state.write();
 		let mut old_workloads = prev.workloads;
 		let mut old_services = prev.services;
 		let mut next_state = PreviousState {
@@ -611,7 +613,7 @@ impl agent_xds::Handler<XdsAddress> for StoreUpdater {
 		&self,
 		updates: Box<&mut dyn Iterator<Item = agent_xds::XdsUpdate<XdsAddress>>>,
 	) -> Result<(), Vec<agent_xds::RejectedConfig>> {
-		let mut state = self.state.write().unwrap();
+		let mut state = self.state.write();
 		let handle = |res: XdsUpdate<XdsAddress>| {
 			match res {
 				XdsUpdate::Update(w) => state.insert_address(w.resource)?,

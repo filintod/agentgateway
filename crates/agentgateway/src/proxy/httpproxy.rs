@@ -521,7 +521,6 @@ impl HTTPProxy {
 		let host = http::get_host(&req)
 			.map(|s| s.to_string())
 			.snapshot_on_err(log, &mut req)?;
-		log.host = Some(host.clone());
 		log.method = Some(req.method().clone());
 		log.path = Some(
 			req
@@ -536,21 +535,29 @@ impl HTTPProxy {
 		let selected_listener = selected_listener
 			.or_else(|| bind.listeners.best_match_http(&host))
 			.ok_or(ProxyError::ListenerNotFound);
+		// Move host into log after listener matching to avoid a clone
+		log.host = Some(host);
 		let selected_listener = match selected_listener {
 			Ok(l) => {
 				debug!(bind=%bind_name, listener=%l.key, "selected listener");
-				let frontend_policies = inputs.stores.read_binds().listener_frontend_policies(
-					&l.name,
-					req
-						.extensions()
-						.get::<WaypointService>()
-						.map(WaypointService::as_policy_ref),
-				);
+				// Batch two lookups under a single RwLock acquisition
+				let (frontend_policies, gw_policies) = {
+					let binds = inputs.stores.read_binds();
+					let fp = binds.listener_frontend_policies(
+						&l.name,
+						req
+							.extensions()
+							.get::<WaypointService>()
+							.map(WaypointService::as_policy_ref),
+					);
+					let gp = binds.gateway_policies(&l.name);
+					(fp, gp)
+				};
 
 				self
 					.handle_frontend_policies(&frontend_policies, log, &mut req)
 					.await;
-				l
+				(l, gw_policies)
 			},
 			Err(e) => {
 				let frontend_policies = inputs
@@ -563,13 +570,9 @@ impl HTTPProxy {
 				return Err(ProxyResponse::Error(e)).snapshot_on_err(log, &mut req);
 			},
 		};
+		let (selected_listener, mut gateway_policies) = selected_listener;
 		log.bind_name = Some(bind_name.clone());
 		log.listener_name = Some(selected_listener.name.clone());
-
-		let mut gateway_policies = inputs
-			.stores
-			.read_binds()
-			.gateway_policies(&selected_listener.name);
 		gateway_policies.register_cel_expressions(log.cel.ctx());
 		// This is unfortunate but we record the request twice possibly; we want to record it as early as possible
 		// (for logging, etc) and also after we register the expressions since new fields may be available.
@@ -594,7 +597,7 @@ impl HTTPProxy {
 		Self::detect_misdirected(log, bind, &req, &selected_listener).snapshot_on_err(log, &mut req)?;
 
 		let (selected_route, path_match) = http::route::select_best_route(
-			inputs.stores.clone(),
+			&inputs.stores,
 			self.target_address,
 			&selected_listener,
 			&req,
@@ -637,11 +640,15 @@ impl HTTPProxy {
 			.ext_proc
 			.take()
 			.map(|c| c.build(self.policy_client()));
-		response_policies.route_response_header = route_policies.response_header_modifier.clone();
+		// Move fields out of route_policies to avoid cloning. These are all Option
+		// types so .take() replaces them with None and returns the value.
+		// Note: transformation must be set before apply_request_policies because
+		// direct_response may return early and still needs the response transformation.
+		response_policies.route_response_header = route_policies.response_header_modifier.take();
 		// backend_response_header is set much later
-		response_policies.timeout = route_policies.timeout.clone();
+		response_policies.timeout = route_policies.timeout.take();
 		response_policies.transformation = route_policies.transformation.clone();
-		response_policies.gateway_transformation = gateway_policies.transformation.clone();
+		response_policies.gateway_transformation = gateway_policies.transformation.take();
 		response_policies.ext_proc = maybe_ext_proc;
 		response_policies.gateway_ext_proc = maybe_gateway_ext_proc;
 
@@ -704,7 +711,7 @@ impl HTTPProxy {
 		}
 
 		const MAX_BUFFERED_BYTES: usize = 64 * 1024;
-		let retries = route_policies.retry.clone();
+		let retries = route_policies.retry.take();
 		let late_route_policies: Arc<LLMRequestPolicies> = Arc::new(route_policies.into());
 		// attempts is the total number of attempts, not the retries
 		let attempts = retries.as_ref().map(|r| r.attempts.get() + 1).unwrap_or(1);
@@ -761,7 +768,7 @@ impl HTTPProxy {
 				log.retry_attempt = Some(n);
 				head.headers.insert(
 					HeaderName::from_static("x-retry-attempt"),
-					HeaderValue::try_from(format!("{n}")).expect("number is always a valid header value"),
+					HeaderValue::from(n as u16),
 				);
 			}
 			let req = Request::from_parts(head, http::Body::new(this));

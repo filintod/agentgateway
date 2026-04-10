@@ -269,7 +269,7 @@ fn select_best_route(
 	// Try explicit TCP routes first
 	for hnm in agent::HostnameMatch::all_matches_or_none(host) {
 		if let Some(r) = listener.tcp_routes.get_hostname(&hnm) {
-			return Some(Arc::new(r.clone()));
+			return Some(r);
 		}
 	}
 
@@ -286,7 +286,7 @@ fn select_best_route(
 			if let Some(svc_tcp_routes) = binds.get_service_tcp_routes(&svc_nh) {
 				for hnm in agent::HostnameMatch::all_matches(&svc.hostname) {
 					if let Some(r) = svc_tcp_routes.get_hostname(&hnm) {
-						return Some(Arc::new(r.clone()));
+						return Some(r);
 					}
 				}
 				// GAMMA: service routes exist but none matched -> reject
@@ -403,7 +403,7 @@ pub fn get_backend_policies(
 mod tests {
 	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 	use std::sync::Arc;
-	use std::sync::RwLock;
+	use parking_lot::RwLock;
 
 	use agent_core::strng;
 
