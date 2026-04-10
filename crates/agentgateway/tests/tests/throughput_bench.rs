@@ -40,7 +40,8 @@ fn get_rss_bytes() -> u64 {
 				.nth(1)
 				.and_then(|s| s.parse().ok())
 				.unwrap_or(0);
-			rss_pages * 4096
+			let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+			rss_pages * page_size
 		} else {
 			0
 		}
@@ -82,6 +83,12 @@ fn build_config(backend_addr: &str, n_routes: usize) -> String {
 
 /// `routes` is the list of (path, query) pairs to cycle through; empty = single path "/".
 async fn run_bench(label: &str, config: String, routes: &[(&str, &str)], concurrency: usize, duration: Duration) -> anyhow::Result<()> {
+	// Suppress per-request INFO logs so log I/O doesn't inflate latency measurements.
+	// The "request" target is checked via telemetry::enabled() before each log emission,
+	// so disabling it here skips the log entirely rather than just discarding after formatting.
+	agent_core::telemetry::testing::setup_test_logging();
+	let _ = agent_core::telemetry::set_level(false, "request=off");
+
 	let gw = AgentGateway::new(config).await?;
 	let port = gw.port();
 
